@@ -1,7 +1,8 @@
 {
-  "name": "AgriSmart AI: CURD",
+  "name": "AgriSmart AI: Precision Agriculture Platform",
   "description": "A comprehensive data-driven platform for farmers to monitor soil health, predict optimal crops, track market trends, and consult an AI Agronomist with deep IoT integration and an admin management suite.",
   "requestFramePermissions": [
-    "geolocation"
+    "geolocation",
+    "camera"
   ]
 }

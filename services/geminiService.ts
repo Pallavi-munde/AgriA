@@ -20,6 +20,52 @@ export const getGeminiChatResponse = async (message: string, context?: any) => {
   }
 };
 
+export const diagnosePlantDisease = async (base64Image: string) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: [
+        {
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: base64Image,
+          },
+        },
+        {
+          text: "Identify the plant, the potential disease or pest visible in this image, and suggest organic and chemical treatments. Return the response as a structured report.",
+        },
+      ],
+      config: {
+        systemInstruction: "You are an expert plant pathologist. Provide precise diagnoses.",
+      },
+    });
+    return response.text;
+  } catch (error) {
+    console.error("Diagnosis Error:", error);
+    throw error;
+  }
+};
+
+export const searchMarketTrends = async (commodity: string) => {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Search for the current market price trends and latest news for ${commodity} in Indian agricultural markets for this week.`,
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
+    
+    return {
+      text: response.text,
+      sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks || []
+    };
+  } catch (error) {
+    console.error("Market Search Error:", error);
+    throw error;
+  }
+};
+
 export const getCropRecommendation = async (sensorData: any) => {
   try {
     const prompt = `Based on these sensor readings: 
