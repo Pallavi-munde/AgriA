@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { UserRole } from '../types';
+import { TRANSLATIONS } from '../constants';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -8,36 +9,60 @@ interface LayoutProps {
   onLogout: () => void;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  language: string;
+  setLanguage: (lang: string) => void;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, userRole, onLogout, activeTab, setActiveTab }) => {
+const Layout: React.FC<LayoutProps> = ({ children, userRole, onLogout, activeTab, setActiveTab, language, setLanguage }) => {
+  const t = TRANSLATIONS[language];
+
   const tabs = userRole === UserRole.ADMIN 
     ? [
-        { id: 'dashboard', icon: 'fa-chart-pie', label: 'Overview' },
-        { id: 'farmers', icon: 'fa-user-group', label: 'Farmers' },
-        { id: 'ads', icon: 'fa-bullhorn', label: 'Campaigns' },
-        { id: 'private', icon: 'fa-vault', label: 'Repository' }
+        { id: 'dashboard', icon: 'fa-chart-pie', label: t.overview },
+        { id: 'farmers', icon: 'fa-user-group', label: t.farmers },
+        { id: 'ads', icon: 'fa-bullhorn', label: t.campaigns },
+        { id: 'private', icon: 'fa-vault', label: t.repository }
       ]
     : [
-        { id: 'dashboard', icon: 'fa-leaf', label: 'Health' },
-        { id: 'doctor', icon: 'fa-microscope', label: 'Crop Doctor' },
-        { id: 'prediction', icon: 'fa-brain-circuit', label: 'Predictor' },
-        { id: 'market', icon: 'fa-indian-rupee-sign', label: 'Market' },
-        { id: 'chat', icon: 'fa-message', label: 'Advisor' }
+        { id: 'dashboard', icon: 'fa-leaf', label: t.health },
+        { id: 'doctor', icon: 'fa-microscope', label: t.doctor },
+        { id: 'prediction', icon: 'fa-brain-circuit', label: t.predictor },
+        { id: 'market', icon: 'fa-indian-rupee-sign', label: t.market },
+        { id: 'chat', icon: 'fa-message', label: t.advisor }
       ];
+
+  const LanguageSwitcher = () => (
+    <div className="flex bg-white/10 rounded-xl p-1 border border-white/10">
+      {['en', 'hi', 'mr'].map((lang) => (
+        <button
+          key={lang}
+          onClick={() => setLanguage(lang)}
+          className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+            language === lang ? 'bg-[#10b981] text-white shadow-md' : 'text-emerald-100 hover:text-white'
+          }`}
+        >
+          {lang}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#f8fafc] flex flex-col md:flex-row">
       {/* Sidebar - Desktop */}
       <aside className="hidden md:flex w-72 flex-col bg-[#064e3b] text-white p-8 sticky top-0 h-screen shadow-2xl">
-        <div className="flex items-center gap-4 mb-16">
+        <div className="flex items-center gap-4 mb-8">
           <div className="bg-white/10 p-3 rounded-2xl backdrop-blur-md border border-white/20">
             <i className="fas fa-seedling text-[#10b981] text-2xl"></i>
           </div>
           <div>
-            <h1 className="text-xl font-extrabold tracking-tight">AgriSmart AI</h1>
+            <h1 className="text-xl font-extrabold tracking-tight">{t.appName}</h1>
             <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-widest">Precision Farm Suite</p>
           </div>
+        </div>
+
+        <div className="mb-8">
+           <LanguageSwitcher />
         </div>
 
         <nav className="flex-1 space-y-3">
@@ -74,9 +99,12 @@ const Layout: React.FC<LayoutProps> = ({ children, userRole, onLogout, activeTab
           <i className="fas fa-seedling text-emerald-400 text-xl"></i>
           <span className="font-black text-lg">AgriSmart</span>
         </div>
-        <button onClick={onLogout} className="p-2 bg-white/10 rounded-xl">
-          <i className="fas fa-power-off text-sm"></i>
-        </button>
+        <div className="flex items-center gap-3">
+          <LanguageSwitcher />
+          <button onClick={onLogout} className="p-2 bg-white/10 rounded-xl">
+            <i className="fas fa-power-off text-sm"></i>
+          </button>
+        </div>
       </header>
 
       {/* Main Content */}

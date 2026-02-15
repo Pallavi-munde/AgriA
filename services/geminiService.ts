@@ -1,26 +1,27 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { SYSTEM_INSTRUCTION } from "../constants";
+import { getSystemInstruction } from "../constants";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+// API key is obtained exclusively from process.env.API_KEY
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const getGeminiChatResponse = async (message: string, context?: any) => {
+export const getGeminiChatResponse = async (message: string, lang: string = 'English') => {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: message,
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
+        systemInstruction: getSystemInstruction(lang),
       },
     });
     return response.text;
   } catch (error) {
     console.error("Gemini Chat Error:", error);
-    return "I'm having trouble connecting to the field. Please try again later.";
+    return "Advisor node is currently syncing. Please try again soon.";
   }
 };
 
-export const diagnosePlantDisease = async (base64Image: string) => {
+export const diagnosePlantDisease = async (base64Image: string, lang: string = 'English') => {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -32,11 +33,11 @@ export const diagnosePlantDisease = async (base64Image: string) => {
           },
         },
         {
-          text: "Identify the plant, the potential disease or pest visible in this image, and suggest organic and chemical treatments. Return the response as a structured report.",
+          text: `Identify the plant, analyze any visual symptoms of diseases, pests or nutrient deficiencies, and provide detailed remediation steps including biological and chemical options. Respond strictly in ${lang}.`,
         },
       ],
       config: {
-        systemInstruction: "You are an expert plant pathologist. Provide precise diagnoses.",
+        systemInstruction: `You are a world-class AI Phytopathologist. Provide precise and actionable plant health diagnoses in ${lang}.`,
       },
     });
     return response.text;
@@ -46,11 +47,11 @@ export const diagnosePlantDisease = async (base64Image: string) => {
   }
 };
 
-export const searchMarketTrends = async (commodity: string) => {
+export const searchMarketTrends = async (commodity: string, lang: string = 'English') => {
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Search for the current market price trends and latest news for ${commodity} in Indian agricultural markets for this week.`,
+      contents: `Search for the latest mandi market prices, volume trends, and government policy news for ${commodity} in India this week. Summarize in ${lang}.`,
       config: {
         tools: [{ googleSearch: {} }],
       },
@@ -66,17 +67,10 @@ export const searchMarketTrends = async (commodity: string) => {
   }
 };
 
-export const getCropRecommendation = async (sensorData: any) => {
+export const getCropRecommendation = async (sensorData: any, lang: string = 'English') => {
   try {
-    const prompt = `Based on these sensor readings: 
-      Nitrogen (N): ${sensorData.n}
-      Phosphorus (P): ${sensorData.p}
-      Potassium (K): ${sensorData.k}
-      pH: ${sensorData.ph}
-      Moisture: ${sensorData.moisture}%
-      Temp: ${sensorData.temp}°C
-      Humidity: ${sensorData.humidity}%
-      Recommend the top 3 optimal crops. Return ONLY a valid JSON array of objects.`;
+    const prompt = `Precision Telemetry: N:${sensorData.n}ppm, P:${sensorData.p}ppm, K:${sensorData.k}ppm, pH:${sensorData.ph}, Moisture:${sensorData.moisture}%, Temp:${sensorData.temp}°C.
+      Analyze these multi-spectral values and suggest the top 3 high-yield crops. Include confidence scores and seasonal outlooks. Return as JSON.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -101,7 +95,7 @@ export const getCropRecommendation = async (sensorData: any) => {
     
     return JSON.parse(response.text);
   } catch (error) {
-    console.error("Gemini Recommendation Error:", error);
+    console.error("Prediction Error:", error);
     throw error;
   }
 };

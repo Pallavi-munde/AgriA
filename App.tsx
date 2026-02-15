@@ -1,616 +1,533 @@
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Layout from './components/Layout';
-import { User, UserRole, UserStatus, SensorData, CropRecommendation, MarketRate, AdBanner } from './types';
-import { MOCK_SENSORS } from './constants';
-import { getGeminiChatResponse, getCropRecommendation, diagnosePlantDisease, searchMarketTrends } from './services/geminiService';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { User, UserRole, UserStatus, SensorData, CropRecommendation, AdBanner } from './types';
+import { MOCK_SENSORS, TRANSLATIONS, getSystemInstruction } from './constants';
+import { getCropRecommendation, diagnosePlantDisease, searchMarketTrends } from './services/geminiService';
+import { AreaChart, Area, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
+import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 
-// --- Sub Components ---
+// --- Mock Data ---
+const MOCK_CAMPAIGNS: AdBanner[] = [
+  { id: '1', title: 'Sustainable Wheat Farming Workshop', imageUrl: 'https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?q=80&w=2070&auto=format&fit=crop', targetUrl: '#', clicks: 1240 },
+  { id: '2', title: 'New Government MSP for Monsoon Crops', imageUrl: 'https://images.unsplash.com/photo-1592982537447-7440770cbfc9?q=80&w=2070&auto=format&fit=crop', targetUrl: '#', clicks: 850 },
+  { id: '3', title: 'Bio-Fertilizer Subsidy Program 2024', imageUrl: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?q=80&w=2070&auto=format&fit=crop', targetUrl: '#', clicks: 2100 },
+];
 
-const SensorCard: React.FC<{ label: string; value: string | number; unit: string; icon: string; color: string }> = ({ label, value, unit, icon, color }) => (
-  <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-500 group overflow-hidden relative">
-    <div className={`absolute -right-4 -bottom-4 text-6xl opacity-5 text-${color} group-hover:scale-125 transition-transform duration-700`}>
-      <i className={`fas ${icon}`}></i>
-    </div>
-    <div className="flex justify-between items-start mb-6">
-      <div className={`p-4 rounded-2xl bg-${color}/10 text-${color}`}>
-        <i className={`fas ${icon} text-xl`}></i>
+const MOCK_DOCS = [
+  { n: 'District Soil Assessment.pdf', s: '5.4 MB', i: 'fa-file-pdf', c: 'text-rose-500' },
+  { n: 'Aggregate NPK Logs.csv', s: '12.1 MB', i: 'fa-file-csv', c: 'text-emerald-500' },
+  { n: 'National Subsidy Rules.docx', s: '1.2 MB', i: 'fa-file-word', c: 'text-blue-500' },
+];
+
+// --- Audio Utilities for Live API ---
+function encode(bytes: Uint8Array) {
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+  return bytes;
+}
+
+async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+const SensorCard: React.FC<{ label: string; value: string | number; unit: string; icon: string; colorKey: string }> = ({ label, value, unit, icon, colorKey }) => {
+  const colorMap: any = {
+    'blue-500': 'text-blue-500 bg-blue-50',
+    'purple-500': 'text-purple-500 bg-purple-50',
+    'orange-500': 'text-orange-500 bg-orange-50',
+    'rose-500': 'text-rose-500 bg-rose-50',
+    'emerald-500': 'text-emerald-500 bg-emerald-50',
+    'amber-500': 'text-amber-500 bg-amber-50',
+  };
+  const colors = colorMap[colorKey] || 'text-emerald-500 bg-emerald-50';
+  return (
+    <div className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-100 relative group overflow-hidden transition-all hover:shadow-md">
+      <div className={`absolute -right-4 -bottom-4 text-6xl opacity-5 ${colors.split(' ')[0]} group-hover:scale-125 transition-transform duration-700`}>
+        <i className={`fas ${icon}`}></i>
       </div>
-      <div className="px-2 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold uppercase rounded-md tracking-widest">Live</div>
+      <div className="flex justify-between items-start mb-6">
+        <div className={`p-4 rounded-2xl ${colors}`}><i className={`fas ${icon} text-xl`}></i></div>
+        <div className="px-2 py-1 bg-emerald-50 text-emerald-600 text-[10px] font-bold uppercase rounded-md tracking-widest">Live</div>
+      </div>
+      <h3 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">{label}</h3>
+      <div className="flex items-baseline gap-1">
+        <span className="text-3xl font-black text-slate-800">{value}</span>
+        <span className="text-slate-400 text-sm font-medium">{unit}</span>
+      </div>
     </div>
-    <h3 className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">{label}</h3>
-    <div className="flex items-baseline gap-1">
-      <span className="text-3xl font-black text-slate-800">{value}</span>
-      <span className="text-slate-400 text-sm font-medium">{unit}</span>
-    </div>
-  </div>
-);
+  );
+};
 
 const App: React.FC = () => {
+  // Global States
+  const [farmers, setFarmers] = useState<User[]>(() => {
+    const saved = localStorage.getItem('agri_farmers_v7');
+    return saved ? JSON.parse(saved) : [
+      { id: '1', name: 'Rajesh Kumar', phone: '9876543210', role: UserRole.FARMER, status: UserStatus.APPROVED, joinedAt: '2023-10-12', password: 'password' },
+    ];
+  });
+  useEffect(() => localStorage.setItem('agri_farmers_v7', JSON.stringify(farmers)), [farmers]);
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isRegistering, setIsRegistering] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [sensors, setSensors] = useState<SensorData>(MOCK_SENSORS);
+  const [language, setLanguage] = useState('en');
+  const [sensors] = useState<SensorData>(MOCK_SENSORS);
   const [isSyncing, setIsSyncing] = useState(false);
-  
-  // Crop Doctor State
+  const [loginPhone, setLoginPhone] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [authState, setAuthState] = useState<'login' | 'applying' | 'success'>('login');
+  const [applyForm, setApplyForm] = useState({ name: '', phone: '', password: '', area: '', location: '' });
+
+  // Feature specific states
   const [diagnosisImage, setDiagnosisImage] = useState<string | null>(null);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   const [diagnosisResult, setDiagnosisResult] = useState<string | null>(null);
+  const [marketQuery, setMarketQuery] = useState('Rice');
+  const [marketIntel, setMarketIntel] = useState<{text: string, sources: any[]} | null>(null);
+  const [isMarketSearching, setIsMarketSearching] = useState(false);
+  const [recs, setRecs] = useState<CropRecommendation[]>([]);
+  const [isPredicting, setIsPredicting] = useState(false);
+  const [manualParams, setManualParams] = useState({ n: 45, p: 50, k: 35, ph: 6.5, moisture: 20, temp: 25 });
+  const [predMode, setPredMode] = useState<'iot' | 'manual'>('iot');
 
-  // Market Search State
-  const [marketSearchQuery, setMarketSearchQuery] = useState('Wheat');
-  const [isSearchingMarket, setIsSearchingMarket] = useState(false);
-  const [marketTrends, setMarketTrends] = useState<{text: string, sources: any[]} | null>(null);
+  // Voice States
+  const [isVoiceActive, setIsVoiceActive] = useState(false);
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const [liveTransInput, setLiveTransInput] = useState('');
+  const [liveTransOutput, setLiveTransOutput] = useState('');
+  const [audioLevel, setAudioLevel] = useState(0);
 
-  const [recommendations, setRecommendations] = useState<CropRecommendation[]>([]);
-  const [isLoadingRecs, setIsLoadingRecs] = useState(false);
-  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'bot'; text: string }[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  
-  const [farmers, setFarmers] = useState<User[]>([
-    { id: '1', name: 'Rajesh Kumar', phone: '9876543210', role: UserRole.FARMER, status: UserStatus.APPROVED, joinedAt: '2023-10-12' },
-    { id: '2', name: 'Sunita Devi', phone: '9876543211', role: UserRole.FARMER, status: UserStatus.PENDING, joinedAt: '2023-11-05' },
-    { id: '3', name: 'Amit Singh', phone: '9876543212', role: UserRole.FARMER, status: UserStatus.PENDING, joinedAt: '2023-11-20' },
-  ]);
+  const sessionRef = useRef<any>(null);
+  const inputCtxRef = useRef<AudioContext | null>(null);
+  const outputCtxRef = useRef<AudioContext | null>(null);
+  const inputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const outputAnalyserRef = useRef<AnalyserNode | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
 
-  const [ads] = useState<AdBanner[]>([
-    { id: '1', title: 'Smart Irrigation Valve', imageUrl: 'https://images.unsplash.com/photo-1558449028-b53a39d100fc?auto=format&fit=crop&q=80&w=400', targetUrl: '#', clicks: 245 },
-    { id: '2', title: 'Organic Pesticide Pack', imageUrl: 'https://images.unsplash.com/photo-1592982537447-7440770cbfc9?auto=format&fit=crop&q=80&w=400', targetUrl: '#', clicks: 182 },
-  ]);
+  const t = TRANSLATIONS[language];
+  const langDisplay = language === 'en' ? 'English' : language === 'hi' ? 'Hindi' : 'Marathi';
 
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // --- Handlers ---
-
-  const handleSyncIoT = () => {
-    setIsSyncing(true);
-    setTimeout(() => {
-      setSensors(prev => ({
-        ...prev,
-        moisture: Math.floor(Math.random() * (40 - 15) + 15),
-        temp: Math.floor(Math.random() * (35 - 22) + 22),
-        lastUpdated: new Date().toISOString()
-      }));
-      setIsSyncing(false);
-    }, 1500);
+  const stopVoice = () => {
+    setIsVoiceActive(false); setIsAiSpeaking(false); setIsThinking(false);
+    setLiveTransInput(''); setLiveTransOutput(''); setAudioLevel(0);
+    if (sessionRef.current) sessionRef.current.close();
+    if (inputCtxRef.current) inputCtxRef.current.close();
+    if (outputCtxRef.current) outputCtxRef.current.close();
+    sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+    sourcesRef.current.clear();
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setDiagnosisImage(reader.result as string);
-        setDiagnosisResult(null);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleRunDiagnosis = async () => {
-    if (!diagnosisImage) return;
-    setIsDiagnosing(true);
+  const startVoice = async () => {
     try {
-      const base64 = diagnosisImage.split(',')[1];
-      const result = await diagnosePlantDisease(base64);
-      setDiagnosisResult(result);
-    } catch (err) {
-      alert("Error diagnosing leaf. Please try again.");
-    } finally {
-      setIsDiagnosing(false);
-    }
+      setIsVoiceActive(true);
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      inputCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      outputCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      inputAnalyserRef.current = inputCtxRef.current.createAnalyser();
+      inputAnalyserRef.current.fftSize = 256;
+      outputAnalyserRef.current = outputCtxRef.current.createAnalyser();
+      outputAnalyserRef.current.fftSize = 256;
+
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        callbacks: {
+          onopen: () => {
+            const source = inputCtxRef.current!.createMediaStreamSource(stream);
+            const scriptProcessor = inputCtxRef.current!.createScriptProcessor(4096, 1, 1);
+            source.connect(inputAnalyserRef.current!);
+            const dataArray = new Uint8Array(256);
+            const update = () => {
+              if (!isVoiceActive) return;
+              let level = 0;
+              if (isAiSpeaking && outputAnalyserRef.current) {
+                outputAnalyserRef.current.getByteFrequencyData(dataArray);
+                level = dataArray.reduce((a, b) => a + b) / dataArray.length;
+              } else if (inputAnalyserRef.current) {
+                inputAnalyserRef.current.getByteFrequencyData(dataArray);
+                level = dataArray.reduce((a, b) => a + b) / dataArray.length;
+              }
+              setAudioLevel(level);
+              requestAnimationFrame(update);
+            };
+            update();
+            scriptProcessor.onaudioprocess = (e) => {
+              const inputData = e.inputBuffer.getChannelData(0);
+              const int16 = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
+              const pcmBlob = { data: encode(new Uint8Array(int16.buffer)), mimeType: 'audio/pcm;rate=16000' };
+              sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob }));
+            };
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(inputCtxRef.current!.destination);
+          },
+          onmessage: async (msg: LiveServerMessage) => {
+            if (msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
+              setIsAiSpeaking(true); setIsThinking(false);
+              const base64 = msg.serverContent.modelTurn.parts[0].inlineData.data;
+              const ctx = outputCtxRef.current!;
+              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+              const buffer = await decodeAudioData(decode(base64), ctx, 24000, 1);
+              const source = ctx.createBufferSource();
+              source.buffer = buffer;
+              source.connect(outputAnalyserRef.current!);
+              outputAnalyserRef.current!.connect(ctx.destination);
+              source.start(nextStartTimeRef.current);
+              nextStartTimeRef.current += buffer.duration;
+              sourcesRef.current.add(source);
+              source.onended = () => { 
+                sourcesRef.current.delete(source); 
+                if (sourcesRef.current.size === 0) setIsAiSpeaking(false); 
+              };
+            }
+            if (msg.serverContent?.inputTranscription) { 
+              setLiveTransInput(msg.serverContent.inputTranscription.text); 
+              setIsThinking(true); 
+            }
+            if (msg.serverContent?.outputTranscription) {
+              setLiveTransOutput(prev => prev + msg.serverContent!.outputTranscription!.text);
+            }
+            if (msg.serverContent?.turnComplete) {
+              setIsThinking(false);
+              setTimeout(() => { 
+                if (!isAiSpeaking) { 
+                  setLiveTransInput(''); 
+                  setLiveTransOutput(''); 
+                } 
+              }, 6000);
+            }
+            if (msg.serverContent?.interrupted) {
+              sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+              sourcesRef.current.clear();
+              nextStartTimeRef.current = 0;
+              setIsAiSpeaking(false);
+            }
+          },
+          onclose: () => stopVoice(),
+          onerror: () => stopVoice()
+        },
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          inputAudioTranscription: {}, outputAudioTranscription: {},
+          systemInstruction: getSystemInstruction(langDisplay) + 
+            " You are an AI Agronomist Advisor. BE PROACTIVE. Introduce yourself. Greet the farmer warmly. Offer to check NPK, diagnose a crop, or give market trends. Use the latest sensor telemetry provided if applicable.",
+        }
+      });
+      sessionRef.current = await sessionPromise;
+    } catch (err) { stopVoice(); }
   };
 
-  const handleMarketSearch = async () => {
-    setIsSearchingMarket(true);
-    try {
-      const data = await searchMarketTrends(marketSearchQuery);
-      setMarketTrends(data);
-    } catch (err) {
-      alert("Failed to search market trends.");
-    } finally {
-      setIsSearchingMarket(false);
-    }
-  };
-
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    const phone = formData.get('phone') as string;
-    const password = formData.get('password') as string;
+    if (loginPhone === 'admin' && loginPass === 'admin') {
+      setCurrentUser({ id: 'adm-0', name: 'System Admin', phone: 'admin', role: UserRole.ADMIN, status: UserStatus.APPROVED, joinedAt: new Date().toISOString() });
+      setActiveTab('dashboard'); return;
+    }
+    const user = farmers.find(f => f.phone === loginPhone);
+    if (user && user.status === UserStatus.APPROVED && (loginPass === (user.password || 'password'))) {
+      setCurrentUser(user); setActiveTab('dashboard');
+    } else alert("Invalid credentials or account pending approval.");
+  };
 
-    if (phone === 'admin' && password === 'admin') {
-      setCurrentUser({ id: '0', name: 'Admin Master', phone: '000', role: UserRole.ADMIN, status: UserStatus.APPROVED, joinedAt: '2023-01-01' });
-    } else {
-      const user = farmers.find(f => f.phone === phone);
-      if (user) {
-        if (user.status === UserStatus.APPROVED) setCurrentUser(user);
-        else alert("Account pending approval.");
-      } else {
-        alert("User not found.");
-      }
+  const handleFarmerAction = (id: string, status: UserStatus) => {
+    setFarmers(prev => prev.map(f => f.id === id ? { ...f, status } : f));
+  };
+
+  const handleApply = (e: React.FormEvent) => {
+    e.preventDefault();
+    const newUser: User = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: applyForm.name, phone: applyForm.phone, password: applyForm.password,
+      role: UserRole.FARMER, status: UserStatus.PENDING, farmArea: parseFloat(applyForm.area),
+      joinedAt: new Date().toISOString()
+    };
+    setFarmers(prev => [...prev, newUser]);
+    setAuthState('success');
+  };
+
+  const generateFriendlyPassword = () => {
+    const words = ["Soil", "Seed", "Rain", "Farm", "Leaf", "Root", "Green", "Crop"];
+    const p = words[Math.floor(Math.random()*words.length)] + "-" + Math.floor(1000 + Math.random()*9000);
+    setApplyForm({...applyForm, password: p});
+  };
+
+  // Content rendering logic
+  const renderFarmerContent = () => {
+    switch(activeTab) {
+      case 'dashboard':
+        return (
+          <div className="space-y-10 animate-in fade-in duration-700">
+            <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+              <div><h2 className="text-4xl font-black text-slate-800 tracking-tight">Farm Health</h2><p className="text-slate-400 font-bold">IoT-Linked Telemetry Dashboard</p></div>
+              <button onClick={() => { setIsSyncing(true); setTimeout(() => setIsSyncing(false), 1500); }} className="px-8 py-4 bg-white border border-slate-100 rounded-2xl font-black text-slate-700 hover:bg-slate-50 flex items-center gap-3 shadow-sm transition-all active:scale-95">
+                <i className={`fas fa-sync-alt ${isSyncing ? 'animate-spin text-emerald-500' : ''}`}></i> {isSyncing ? t.syncing : t.sync}
+              </button>
+            </header>
+            <div className="grid grid-cols-2 lg:grid-cols-3 gap-6">
+              <SensorCard label={t.nitrogen} value={sensors.n} unit="ppm" icon="fa-vial" colorKey="blue-500" />
+              <SensorCard label={t.phosphorus} value={sensors.p} unit="ppm" icon="fa-flask-vial" colorKey="purple-500" />
+              <SensorCard label={t.potassium} value={sensors.k} unit="ppm" icon="fa-atom" colorKey="orange-500" />
+              <SensorCard label={t.soilPh} value={sensors.ph} unit="pH" icon="fa-droplet-degree" colorKey="rose-500" />
+              <SensorCard label={t.moisture} value={sensors.moisture} unit="%" icon="fa-droplet" colorKey="emerald-500" />
+              <SensorCard label={t.temp} value={sensors.temp} unit="°C" icon="fa-temperature-three-quarters" colorKey="amber-500" />
+            </div>
+          </div>
+        );
+      case 'doctor':
+        return (
+          <div className="max-w-4xl mx-auto space-y-10 animate-in zoom-in duration-500">
+            <header className="text-center"><h2 className="text-4xl font-black text-slate-800">Crop Doctor</h2><p className="text-slate-400 font-bold">AI Visual Health Analysis</p></header>
+            <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm space-y-8 text-center">
+              {diagnosisImage ? (
+                <div className="relative rounded-[2.5rem] overflow-hidden shadow-2xl max-w-lg mx-auto">
+                  <img src={diagnosisImage} className="w-full h-80 object-cover" />
+                  <button onClick={() => setDiagnosisImage(null)} className="absolute top-4 right-4 bg-white/90 p-3 rounded-full text-rose-500 shadow-lg hover:bg-white transition-all"><i className="fas fa-times"></i></button>
+                </div>
+              ) : (
+                <label className="w-full h-80 border-4 border-dashed border-slate-100 rounded-[3rem] flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-50 transition-all group">
+                  <div className="w-20 h-20 bg-slate-50 rounded-3xl flex items-center justify-center text-slate-200 text-3xl mb-4 group-hover:scale-110 transition-transform"><i className="fas fa-camera"></i></div>
+                  <span className="font-black text-slate-300 uppercase tracking-widest text-sm">Upload leaf photo</span>
+                  <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files?.[0]; if (f) { const r = new FileReader(); r.onloadend = () => setDiagnosisImage(r.result as string); r.readAsDataURL(f); } }} className="hidden" />
+                </label>
+              )}
+              <button onClick={async () => { if (!diagnosisImage) return; setIsDiagnosing(true); try { const res = await diagnosePlantDisease(diagnosisImage.split(',')[1], langDisplay); setDiagnosisResult(res); } catch(e) { alert("Error analyzing image."); } finally { setIsDiagnosing(false); } }} disabled={isDiagnosing || !diagnosisImage} className="w-full py-6 bg-[#10b981] text-white rounded-[2rem] font-black shadow-xl disabled:opacity-50 transition-all hover:scale-[1.01] active:scale-95">
+                {isDiagnosing ? 'Analyzing health...' : 'Run Diagnostics'}
+              </button>
+              {diagnosisResult && (
+                <div className="p-10 bg-slate-50 rounded-[3rem] text-left border border-slate-100 animate-in slide-in-from-top-4">
+                  <h4 className="font-black text-2xl mb-6 text-slate-800">Expert Analysis Report</h4>
+                  <div className="prose prose-emerald max-w-none text-slate-600 font-bold text-lg leading-relaxed whitespace-pre-wrap">{diagnosisResult}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      case 'prediction':
+        return (
+          <div className="space-y-10 animate-in slide-in-from-right-6 duration-700">
+            <header className="flex justify-between items-center"><div><h2 className="text-4xl font-black text-slate-800">Predictor</h2><p className="text-slate-400 font-bold">Optimal crop selection based on data</p></div><div className="flex bg-slate-100 p-2 rounded-2xl"><button onClick={() => setPredMode('iot')} className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${predMode === 'iot' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}>IoT Auto</button><button onClick={() => setPredMode('manual')} className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${predMode === 'manual' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}>Manual</button></div></header>
+            <div className="bg-white p-10 rounded-[3rem] border border-slate-100 grid grid-cols-2 md:grid-cols-3 gap-8 shadow-sm">
+              {[{ id: 'n', l: 'Nitrogen' }, { id: 'p', l: 'Phosphorus' }, { id: 'k', l: 'Potassium' }, { id: 'ph', l: 'pH' }, { id: 'moisture', l: 'Moisture' }, { id: 'temp', l: 'Temp' }].map(f => (
+                <div key={f.id} className="space-y-2"><label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-2">{f.l}</label><input disabled={predMode === 'iot'} type="number" value={predMode === 'iot' ? sensors[f.id as keyof SensorData] as number : manualParams[f.id as keyof typeof manualParams]} onChange={e => setManualParams({...manualParams, [f.id]: parseFloat(e.target.value)})} className="w-full px-6 py-4 rounded-2xl bg-slate-50 border border-slate-100 font-black outline-none focus:ring-4 focus:ring-emerald-100 transition-all" /></div>
+              ))}
+              <button onClick={async () => { setIsPredicting(true); try { const r = await getCropRecommendation(predMode === 'iot' ? sensors : manualParams, langDisplay); setRecs(r); } catch(e) { alert("Prediction failed."); } finally { setIsPredicting(false); } }} className="md:col-span-3 py-6 bg-[#10b981] text-white rounded-[2rem] font-black shadow-xl mt-4 hover:scale-[1.01] active:scale-95 transition-all">
+                {isPredicting ? 'Consulting ML Models...' : 'Predict Best Crops'}
+              </button>
+            </div>
+            <div className="grid md:grid-cols-3 gap-8">{recs.map((r, i) => (
+              <div key={i} className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm hover:shadow-2xl hover:translate-y-[-4px] transition-all duration-500">
+                <div className="w-16 h-16 bg-emerald-50 rounded-3xl flex items-center justify-center text-[#10b981] text-2xl mb-6 font-black">{Math.round(r.confidence * 100)}%</div>
+                <h4 className="text-3xl font-black text-slate-800 mb-4">{r.crop}</h4>
+                <p className="text-slate-500 text-sm font-bold leading-relaxed mb-8">{r.suitabilityReason}</p>
+                <div className="p-5 bg-emerald-50 rounded-2xl font-black text-emerald-800 text-xs italic leading-snug">"{r.seasonalOutlook}"</div>
+              </div>
+            ))}</div>
+          </div>
+        );
+      case 'market':
+        return (
+          <div className="space-y-10 animate-in fade-in duration-700">
+            <header className="flex flex-col md:flex-row md:items-center justify-between gap-6"><div><h2 className="text-4xl font-black text-slate-800">Market Intel</h2><p className="text-slate-400 font-bold">Grounded analysis of Mandi trends</p></div><div className="flex gap-4"><input value={marketQuery} onChange={e => setMarketQuery(e.target.value)} className="px-8 py-4 bg-white border border-slate-100 rounded-[1.5rem] font-black shadow-sm outline-none focus:ring-4 focus:ring-emerald-100 transition-all" /><button onClick={async () => { setIsMarketSearching(true); try { setMarketIntel(await searchMarketTrends(marketQuery, langDisplay)); } catch(e) { alert("Search failed."); } finally { setIsMarketSearching(false); } }} className="w-16 h-16 bg-[#10b981] text-white rounded-[1.5rem] flex items-center justify-center font-black shadow-xl hover:scale-105 active:scale-95 transition-all"><i className={`fas ${isMarketSearching ? 'fa-spinner animate-spin' : 'fa-search'}`}></i></button></div></header>
+            {marketIntel && (
+              <div className="grid lg:grid-cols-3 gap-10">
+                <div className="lg:col-span-2 bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm space-y-8 animate-in slide-in-from-left-6"><h3 className="text-2xl font-black text-slate-800">Commodity Report</h3><div className="prose prose-emerald max-w-none text-slate-600 font-bold text-xl whitespace-pre-wrap leading-relaxed">{marketIntel.text}</div></div>
+                <div className="bg-slate-900 p-10 rounded-[3.5rem] text-white shadow-2xl h-fit sticky top-12"><h4 className="text-[10px] font-black uppercase text-emerald-400 tracking-widest mb-8">Grounding Citations</h4><div className="space-y-4">{marketIntel.sources.map((s:any, i:number) => <a key={i} href={s.web?.uri} target="_blank" className="block p-5 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/10 transition-all text-xs font-black leading-snug">{s.web?.title}</a>)}</div></div>
+              </div>
+            )}
+          </div>
+        );
+      case 'chat':
+        return (
+          <div className="h-[calc(100vh-220px)] flex flex-col animate-in fade-in duration-700">
+            <header className="mb-8 flex items-center gap-6">
+              <div className="w-16 h-16 bg-[#10b981] text-white rounded-3xl flex items-center justify-center text-3xl shadow-lg shadow-emerald-500/20"><i className="fas fa-headset"></i></div>
+              <div><h2 className="text-3xl font-black text-slate-800">AI Advisor</h2><div className="flex items-center gap-2 mt-1"><div className={`w-2 h-2 rounded-full ${isVoiceActive ? (isAiSpeaking ? 'bg-emerald-400 animate-pulse' : isThinking ? 'bg-amber-400 animate-pulse' : 'bg-red-500 animate-ping') : 'bg-emerald-500'}`}></div><span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest">{isVoiceActive ? (isAiSpeaking ? 'Speaking...' : isThinking ? 'Thinking...' : 'Listening...') : `${langDisplay} Mode`}</span></div></div>
+              <button onClick={isVoiceActive ? stopVoice : startVoice} className={`ml-auto px-10 py-5 rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl transition-all ${isVoiceActive ? 'bg-red-500 text-white shadow-red-500/20' : 'bg-white text-[#10b981] border-2 border-[#10b981]'}`}>{isVoiceActive ? 'End Call' : 'Start Consultation'}</button>
+            </header>
+            <div className="flex-1 bg-white rounded-[3.5rem] shadow-2xl border border-slate-100 flex flex-col overflow-hidden relative p-12 items-center justify-center">
+              {isVoiceActive ? (
+                <div className="w-full max-w-2xl space-y-16 flex flex-col items-center">
+                  <div className="relative">
+                    <div className={`absolute inset-0 rounded-full blur-[120px] transition-all duration-1000 scale-[2.5] ${isAiSpeaking ? 'bg-emerald-500/40' : 'bg-red-500/10'}`}></div>
+                    <div className={`relative w-64 h-64 rounded-full flex items-center justify-center border-[12px] overflow-hidden transition-all duration-500 ${isAiSpeaking ? 'bg-[#064e3b] border-emerald-500/50' : isThinking ? 'bg-slate-800 border-amber-500/50' : 'bg-slate-900 border-white/10'}`}>
+                      <div className="flex items-end gap-2 px-8 h-36">{[...Array(24)].map((_, i) => <div key={i} className={`w-2 rounded-full transition-all duration-100 ${isAiSpeaking ? 'bg-emerald-400' : 'bg-red-400'}`} style={{ height: `${Math.max(10, (audioLevel / 100) * (i % 4 === 0 ? 100 : 70) * (Math.random() * 0.5 + 0.5))}%` }}></div>)}</div>
+                    </div>
+                  </div>
+                  <div className="w-full space-y-6">
+                    {liveTransInput && <div className="p-8 bg-slate-50 border border-slate-100 rounded-[2.5rem] text-slate-600 font-bold italic shadow-sm animate-in slide-in-from-bottom-2"><span className="text-[10px] uppercase font-black text-slate-400 block mb-2 tracking-widest">You:</span>{liveTransInput}</div>}
+                    {liveTransOutput && <div className="p-10 bg-emerald-50 border border-emerald-100 rounded-[3rem] text-emerald-900 font-black text-2xl leading-snug shadow-md animate-in slide-in-from-bottom-4"><span className="text-[10px] uppercase font-black text-emerald-400 block mb-2 tracking-widest">Advisor:</span>{liveTransOutput}</div>}
+                    {!liveTransInput && !liveTransOutput && <p className="text-slate-400 font-black uppercase tracking-widest text-xs animate-pulse">Consultant is listening...</p>}
+                  </div>
+                </div>
+              ) : <div className="opacity-10 text-center"><i className="fas fa-seedling text-[15rem] mb-6"></i><p className="text-4xl font-black text-slate-800">Ready for Consultation</p></div>}
+            </div>
+          </div>
+        );
+      default: return null;
     }
   };
 
-  const handleSendChat = async () => {
-    if (!chatInput.trim()) return;
-    const newMsg = { role: 'user' as const, text: chatInput };
-    setChatHistory(prev => [...prev, newMsg]);
-    setChatInput('');
-    const botResponse = await getGeminiChatResponse(chatInput);
-    setChatHistory(prev => [...prev, { role: 'bot', text: botResponse || "Error" }]);
+  const renderAdminContent = () => {
+    switch(activeTab) {
+      case 'dashboard':
+        return (
+          <div className="space-y-12 animate-in fade-in duration-500">
+            <header><h2 className="text-4xl font-black text-slate-800 tracking-tight">System Status</h2><p className="text-slate-400 font-bold">Network Analytics & Stats Overview</p></header>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-xl transition-all"><div><h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Enrolled Farmers</h3><span className="text-6xl font-black text-slate-800">{farmers.length}</span></div><div className="w-20 h-20 bg-emerald-50 rounded-3xl flex items-center justify-center text-emerald-500 text-3xl"><i className="fas fa-users"></i></div></div>
+              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-xl transition-all"><div><h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Queue Approvals</h3><span className="text-6xl font-black text-slate-800">{farmers.filter(f => f.status === UserStatus.PENDING).length}</span></div><div className="w-20 h-20 bg-amber-50 rounded-3xl flex items-center justify-center text-amber-500 text-3xl"><i className="fas fa-clock"></i></div></div>
+              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-sm flex items-center justify-between hover:shadow-xl transition-all"><div><h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">IoT Active Nodes</h3><span className="text-6xl font-black text-slate-800">12</span></div><div className="w-20 h-20 bg-blue-50 rounded-3xl flex items-center justify-center text-blue-500 text-3xl"><i className="fas fa-wifi"></i></div></div>
+            </div>
+            <div className="bg-white p-12 rounded-[4rem] shadow-sm border border-slate-100 h-96 hover:shadow-2xl transition-all duration-700">
+              <h3 className="font-black text-2xl mb-10 text-slate-800">Network Growth Trend</h3>
+              <ResponsiveContainer width="100%" height="80%">
+                <AreaChart data={[{d:'Mon',u:10},{d:'Tue',u:25},{d:'Wed',u:18},{d:'Thu',u:32},{d:'Fri',u:45},{d:'Sat',u:38},{d:'Sun',u:52}]}>
+                  <Tooltip cursor={{stroke: '#10b981', strokeWidth: 2}} contentStyle={{borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontWeight: 800}} />
+                  <Area type="monotone" dataKey="u" stroke="#10b981" strokeWidth={5} fill="#10b981" fillOpacity={0.05} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+      case 'farmers':
+        return (
+          <div className="space-y-10 animate-in slide-in-from-left-8 duration-700">
+            <header><h2 className="text-4xl font-black text-slate-800">Farmer Directory</h2><p className="text-slate-400 font-bold">Manage network enrollment and status</p></header>
+            <div className="bg-white rounded-[3.5rem] shadow-sm border border-slate-100 overflow-hidden">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50 border-b border-slate-100 font-black text-[10px] uppercase tracking-widest text-slate-400"><tr><th className="px-10 py-8">Farmer Identity</th><th className="px-10 py-8">Contact</th><th className="px-10 py-8">Status</th><th className="px-10 py-8 text-right">Verification</th></tr></thead>
+                <tbody className="divide-y divide-slate-50">{farmers.map(f => (
+                  <tr key={f.id} className="hover:bg-slate-50/50 transition-colors group">
+                    <td className="px-10 py-8 font-black text-slate-800 text-lg">{f.name}</td>
+                    <td className="px-10 py-8 font-bold text-slate-500">{f.phone}</td>
+                    <td className="px-10 py-8"><span className={`px-5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest border ${f.status === UserStatus.APPROVED ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : f.status === UserStatus.PENDING ? 'bg-amber-50 text-amber-600 border-amber-100' : 'bg-rose-50 text-rose-600 border-rose-100'}`}>{f.status}</span></td>
+                    <td className="px-10 py-8 text-right space-x-3">{f.status === UserStatus.PENDING && <><button onClick={() => handleFarmerAction(f.id, UserStatus.APPROVED)} className="px-5 py-3 bg-emerald-50 text-emerald-600 rounded-xl hover:bg-emerald-500 hover:text-white transition-all font-black text-xs uppercase tracking-widest">Approve</button><button onClick={() => handleFarmerAction(f.id, UserStatus.REJECTED)} className="px-5 py-3 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-500 hover:text-white transition-all font-black text-xs uppercase tracking-widest">Reject</button></>}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        );
+      case 'ads':
+        return (
+          <div className="space-y-12 animate-in fade-in duration-500">
+            <header className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-800 tracking-tight">Campaign Manager</h2><button className="px-8 py-4 bg-[#10b981] text-white rounded-2xl font-black text-sm shadow-xl hover:scale-105 transition-all">Launch Awareness Hub</button></header>
+            <div className="grid md:grid-cols-3 gap-10">
+              {MOCK_CAMPAIGNS.map(ad => (
+                <div key={ad.id} className="bg-white rounded-[3rem] overflow-hidden shadow-sm border border-slate-100 group hover:shadow-2xl hover:translate-y-[-8px] transition-all duration-700">
+                   <div className="h-56 overflow-hidden relative"><img src={ad.imageUrl} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" /><div className="absolute top-6 right-6 px-4 py-2 bg-white/90 backdrop-blur rounded-xl text-[10px] font-black text-emerald-600 uppercase tracking-widest">Live</div></div>
+                   <div className="p-10 font-black text-slate-800 text-xl leading-snug">{ad.title}<div className="flex items-center gap-4 mt-8"><i className="fas fa-eye text-emerald-500"></i><span className="text-sm font-bold text-slate-400">{ad.clicks} Reach</span></div></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      case 'private':
+        return (
+          <div className="space-y-12 animate-in fade-in duration-500">
+            <header className="flex justify-between items-center"><h2 className="text-4xl font-black text-slate-800 tracking-tight">Private Repository</h2><button className="px-8 py-4 bg-[#064e3b] text-white rounded-2xl font-black text-sm shadow-xl">Secure Upload</button></header>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+              {MOCK_DOCS.map((d, i) => (
+                <div key={i} className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm flex items-center gap-8 group hover:bg-slate-50 transition-all cursor-pointer">
+                  <div className={`w-20 h-20 bg-slate-50 rounded-[2rem] flex items-center justify-center ${d.c} text-3xl group-hover:bg-emerald-500 group-hover:text-white transition-all shadow-inner`}><i className={`fas ${d.i}`}></i></div>
+                  <div className="flex-1 overflow-hidden"><p className="font-black text-slate-800 text-lg truncate mb-1">{d.n}</p><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{d.s}</p></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      default: return null;
+    }
   };
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory]);
-
-  // --- Views ---
-
+  // Auth UI
   if (!currentUser) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#064e3b] px-4 overflow-hidden relative">
-        <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
-           <div className="absolute -top-24 -left-24 w-96 h-96 bg-emerald-400 rounded-full blur-3xl animate-pulse"></div>
-           <div className="absolute bottom-0 right-0 w-[40rem] h-[40rem] bg-emerald-300 rounded-full blur-[120px] opacity-20"></div>
-        </div>
-        
-        <div className="bg-white p-10 rounded-[3rem] shadow-2xl w-full max-w-md relative z-10 border border-emerald-500/20">
-          <div className="text-center mb-12">
-            <div className="bg-[#10b981] w-20 h-20 rounded-[2rem] flex items-center justify-center mx-auto mb-6 shadow-xl shadow-emerald-500/30">
-              <i className="fas fa-seedling text-white text-4xl"></i>
-            </div>
-            <h1 className="text-4xl font-black text-slate-800 tracking-tight">AgriSmart AI</h1>
-            <p className="text-slate-400 mt-2 font-medium">Precision Agriculture Redefined</p>
-          </div>
+      <div className="min-h-screen bg-[#064e3b] flex items-center justify-center p-6 font-sans relative overflow-hidden">
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 blur-[150px] rounded-full animate-pulse"></div>
+        <div className="w-full max-w-lg bg-white rounded-[4rem] shadow-2xl overflow-hidden p-16 relative z-10 border border-emerald-900/10">
+          {authState === 'login' && (
+            <form onSubmit={handleLogin} className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+              <div className="text-center mb-10">
+                <div className="bg-emerald-50 w-24 h-24 rounded-[2.5rem] flex items-center justify-center mx-auto mb-6 text-[#10b981] text-4xl shadow-inner shadow-emerald-500/10"><i className="fas fa-seedling"></i></div>
+                <h2 className="text-4xl font-black text-slate-800 tracking-tight">AgriSmart AI</h2>
+                <p className="text-slate-400 font-bold uppercase tracking-[0.2em] text-[10px] mt-4">Precision Agriculture Network</p>
+              </div>
+              <div className="space-y-6">
+                <div className="space-y-2"><label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-6">Login Identifier</label><input value={loginPhone} onChange={e => setLoginPhone(e.target.value)} placeholder={t.loginPlaceholder} className="w-full px-10 py-6 bg-slate-50 border border-slate-100 rounded-3xl font-black outline-none focus:ring-4 focus:ring-emerald-100 transition-all" /></div>
+                <div className="space-y-2"><label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-6">Passkey</label><input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder={t.passwordPlaceholder} className="w-full px-10 py-6 bg-slate-50 border border-slate-100 rounded-3xl font-black outline-none focus:ring-4 focus:ring-emerald-100 transition-all" /></div>
+              </div>
+              <button type="submit" className="w-full py-6 bg-[#10b981] text-white rounded-[2rem] font-black text-xl shadow-2xl shadow-emerald-500/30 hover:scale-[1.02] active:scale-95 transition-all mt-6 tracking-tight">Access Dashboard</button>
+              <div className="pt-10 border-t border-slate-50 text-center">
+                <p className="text-slate-400 font-bold text-sm">New to the precision network?</p>
+                <button type="button" onClick={() => setAuthState('applying')} className="text-[#10b981] font-black text-sm uppercase tracking-widest mt-4 hover:underline transition-all">{t.applyNow}</button>
+                <div className="mt-8"><button type="button" onClick={() => { setLoginPhone('admin'); setLoginPass('admin'); }} className="text-slate-300 text-[10px] font-bold uppercase tracking-widest hover:text-slate-500 transition-all">Quick Admin Entry (admin/admin)</button></div>
+              </div>
+            </form>
+          )}
 
-          <form onSubmit={handleLogin} className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-xs font-black uppercase text-slate-400 tracking-widest ml-1">Phone Number</label>
-              <input required name="phone" placeholder="Enter Phone or 'admin'" className="w-full px-6 py-4 rounded-2xl bg-slate-50 border border-slate-100 focus:bg-white focus:ring-4 focus:ring-emerald-100 outline-none transition-all font-bold" />
+          {authState === 'applying' && (
+            <form onSubmit={handleApply} className="space-y-8 animate-in slide-in-from-right-8 duration-700">
+              <div className="text-center mb-6"><h2 className="text-4xl font-black text-slate-800 tracking-tight">{t.applyTitle}</h2><p className="text-slate-400 font-bold uppercase tracking-widest text-[10px] mt-2">Network Enrollment Program</p></div>
+              <div className="grid grid-cols-1 gap-5 max-h-[400px] overflow-y-auto pr-4 custom-scrollbar">
+                {[
+                  { label: t.fullName, value: applyForm.name, key: 'name', type: 'text' },
+                  { label: t.phone, value: applyForm.phone, key: 'phone', type: 'tel' },
+                  { label: t.farmArea, value: applyForm.area, key: 'area', type: 'number' },
+                  { label: t.location, value: applyForm.location, key: 'location', type: 'text' }
+                ].map(field => (
+                  <div key={field.key} className="space-y-2"><label className="text-[10px] font-black uppercase text-slate-400 tracking-widest ml-6">{field.label}</label><input required type={field.type} value={field.value} onChange={e => setApplyForm({...applyForm, [field.key]: e.target.value})} className="w-full px-8 py-5 bg-slate-50 border border-slate-100 rounded-[2rem] font-black outline-none focus:ring-4 focus:ring-emerald-100 transition-all" /></div>
+                ))}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center px-6"><label className="text-[10px] font-black uppercase text-slate-400 tracking-widest">{t.yourLoginPass}</label><button type="button" onClick={generateFriendlyPassword} className="text-[10px] font-black text-emerald-500 uppercase tracking-widest">Auto-Gen</button></div>
+                  <input required value={applyForm.password} onChange={e => setApplyForm({...applyForm, password: e.target.value})} className="w-full px-8 py-5 bg-slate-50 border border-slate-100 rounded-[2rem] font-black outline-none focus:ring-4 focus:ring-emerald-100 transition-all" />
+                </div>
+              </div>
+              <button type="submit" className="w-full py-6 bg-[#10b981] text-white rounded-[2.5rem] font-black text-xl shadow-2xl shadow-emerald-500/20 hover:scale-[1.02] active:scale-95 transition-all mt-4">Submit Application</button>
+              <button type="button" onClick={() => setAuthState('login')} className="w-full text-slate-400 font-black text-xs uppercase tracking-widest transition-all">Back to Login</button>
+            </form>
+          )}
+
+          {authState === 'success' && (
+            <div className="text-center py-10 animate-in zoom-in duration-700">
+              <div className="bg-emerald-500 w-28 h-28 rounded-full flex items-center justify-center mx-auto mb-10 text-white text-5xl shadow-2xl shadow-emerald-500/40"><i className="fas fa-check"></i></div>
+              <h2 className="text-4xl font-black text-slate-800 mb-6 tracking-tight">Application Logged</h2>
+              <p className="text-slate-500 font-bold leading-relaxed mb-10 text-lg">Your credentials are being validated. Review may take 24-48 hours.</p>
+              <div className="p-10 bg-slate-50 rounded-[3rem] border border-slate-100 mb-12 text-left">
+                <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Network ID</p><p className="text-3xl font-black text-slate-800 mb-6">{applyForm.phone}</p>
+                <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest mb-2">Private Passkey</p><p className="text-3xl font-black text-emerald-600 tracking-[0.2em] font-mono">{applyForm.password}</p>
+              </div>
+              <button onClick={() => setAuthState('login')} className="w-full py-6 bg-slate-900 text-white rounded-[2rem] font-black text-xl shadow-2xl shadow-slate-900/30">Return to Portal</button>
             </div>
-            <div className="space-y-2">
-              <label className="text-xs font-black uppercase text-slate-400 tracking-widest ml-1">Password</label>
-              <input required name="password" type="password" placeholder="••••••••" className="w-full px-6 py-4 rounded-2xl bg-slate-50 border border-slate-100 focus:bg-white focus:ring-4 focus:ring-emerald-100 outline-none transition-all font-bold" />
-            </div>
-            <button type="submit" className="w-full py-5 bg-[#10b981] text-white rounded-2xl font-black shadow-xl shadow-emerald-500/40 hover:scale-[1.02] active:scale-[0.98] transition-all">
-              Launch Dashboard
-            </button>
-          </form>
-          <div className="mt-8 text-center">
-             <p className="text-sm text-slate-400 font-bold">New to the network? <span className="text-emerald-600 cursor-pointer hover:underline">Apply Here</span></p>
-          </div>
+          )}
         </div>
       </div>
     );
   }
 
   return (
-    <Layout userRole={currentUser.role} onLogout={() => setCurrentUser(null)} activeTab={activeTab} setActiveTab={setActiveTab}>
-      
-      {/* Farmer Dashboard */}
-      {activeTab === 'dashboard' && currentUser.role === UserRole.FARMER && (
-        <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
-          <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-            <div>
-              <h2 className="text-4xl font-black text-slate-800 tracking-tight">Farm Health</h2>
-              <p className="text-slate-400 font-medium text-lg">Real-time IoT telemetry from Sector-4</p>
-            </div>
-            <button 
-              onClick={handleSyncIoT}
-              disabled={isSyncing}
-              className="px-8 py-4 bg-white border-2 border-slate-100 rounded-2xl font-black text-slate-700 hover:bg-slate-50 transition-all flex items-center gap-3 group shadow-sm"
-            >
-              <i className={`fas fa-sync-alt ${isSyncing ? 'animate-spin text-emerald-500' : 'group-hover:rotate-180 transition-transform duration-500'}`}></i>
-              {isSyncing ? 'Linking ESP32...' : 'Sync IoT Sensors'}
-            </button>
-          </header>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
-            <SensorCard label="Nitrogen" value={sensors.n} unit="ppm" icon="fa-vial-circle-check" color="blue-500" />
-            <SensorCard label="Phosphorus" value={sensors.p} unit="ppm" icon="fa-flask-vial" color="purple-500" />
-            <SensorCard label="Potassium" value={sensors.k} unit="ppm" icon="fa-atom" color="orange-500" />
-            <SensorCard label="Soil pH" value={sensors.ph} unit="pH" icon="fa-droplet-degree" color="rose-500" />
-            <SensorCard label="Moisture" value={sensors.moisture} unit="%" icon="fa-droplet" color="emerald-500" />
-            <SensorCard label="Temperature" value={sensors.temp} unit="°C" icon="fa-temperature-three-quarters" color="amber-500" />
-            <SensorCard label="Humidity" value={sensors.humidity} unit="%" icon="fa-cloud-sun" color="cyan-500" />
-            <div className="bg-[#064e3b] p-8 rounded-[2rem] shadow-xl flex flex-col justify-center items-center text-center text-white cursor-pointer hover:bg-emerald-900 transition-all group overflow-hidden relative">
-               <i className="fas fa-satellite-dish text-4xl mb-3 group-hover:scale-110 transition-transform"></i>
-               <span className="font-black text-sm uppercase tracking-widest">Signal Strength</span>
-               <span className="text-xs text-emerald-400 mt-1 font-bold">98% Stable</span>
-               <div className="absolute top-0 right-0 p-3"><div className="w-2 h-2 bg-emerald-400 rounded-full animate-ping"></div></div>
-            </div>
-          </div>
-
-          <div className="grid lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-              <div className="flex items-center justify-between mb-8">
-                <h3 className="font-black text-xl text-slate-800">Moisture Index (24h)</h3>
-                <div className="flex gap-4">
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><div className="w-2 h-2 rounded-full bg-emerald-500"></div> Optimal</div>
-                  <div className="flex items-center gap-2 text-xs font-bold text-slate-400"><div className="w-2 h-2 rounded-full bg-blue-300"></div> Excess</div>
-                </div>
-              </div>
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={[
-                    { t: '06:00', m: 22 }, { t: '10:00', m: 28 }, { t: '14:00', m: 18 }, { t: '18:00', m: 25 }, { t: '22:00', m: 23 },
-                  ]}>
-                    <defs>
-                      <linearGradient id="colorM" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="t" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 'bold'}} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 'bold'}} />
-                    <Tooltip contentStyle={{borderRadius: '20px', border: 'none', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)', padding: '12px'}} />
-                    <Area type="monotone" dataKey="m" stroke="#10b981" fillOpacity={1} fill="url(#colorM)" strokeWidth={4} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="space-y-6">
-               <div className="bg-[#10b981] p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden group">
-                  <div className="relative z-10">
-                    <h3 className="text-xl font-black mb-1">Crop Yield Forecast</h3>
-                    <p className="text-emerald-100 text-sm mb-8 font-medium">Estimated for Monsoon 2024</p>
-                    <div className="flex items-end justify-between">
-                      <span className="text-5xl font-black">9.4</span>
-                      <span className="text-xl font-bold pb-1 text-emerald-100">Tons / Acre</span>
-                    </div>
-                  </div>
-                  <i className="fas fa-chart-line absolute -bottom-6 -right-6 text-[10rem] text-white/10 group-hover:rotate-12 transition-transform duration-700"></i>
-               </div>
-               
-               <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex items-center justify-between">
-                  <div>
-                    <h4 className="font-black text-slate-800">Rainfall Alert</h4>
-                    <p className="text-sm text-slate-400 font-medium">Expected in 4 hours</p>
-                  </div>
-                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-500 flex items-center justify-center text-xl">
-                    <i className="fas fa-cloud-showers-heavy"></i>
-                  </div>
-               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Admin Overview */}
-      {activeTab === 'dashboard' && currentUser.role === UserRole.ADMIN && (
-        <div className="space-y-10 animate-in fade-in duration-700">
-           <header>
-             <h2 className="text-4xl font-black text-slate-800 tracking-tight">Control Center</h2>
-             <p className="text-slate-400 font-medium text-lg">System-wide agricultural monitoring</p>
-           </header>
-
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-                 <div className="flex items-center gap-4 mb-6">
-                   <div className="p-4 rounded-2xl bg-blue-50 text-blue-600 shadow-inner"><i className="fas fa-users-viewfinder text-xl"></i></div>
-                   <h3 className="font-black text-slate-800">Total Enrolled</h3>
-                 </div>
-                 <span className="text-5xl font-black text-slate-800">{farmers.length}</span>
-              </div>
-              <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-                 <div className="flex items-center gap-4 mb-6">
-                   <div className="p-4 rounded-2xl bg-amber-50 text-amber-600 shadow-inner"><i className="fas fa-hourglass-half text-xl"></i></div>
-                   <h3 className="font-black text-slate-800">Approvals</h3>
-                 </div>
-                 <span className="text-5xl font-black text-slate-800">{farmers.filter(f => f.status === UserStatus.PENDING).length}</span>
-              </div>
-              <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
-                 <div className="flex items-center gap-4 mb-6">
-                   <div className="p-4 rounded-2xl bg-emerald-50 text-emerald-600 shadow-inner"><i className="fas fa-database text-xl"></i></div>
-                   <h3 className="font-black text-slate-800">IoT Nodes</h3>
-                 </div>
-                 <span className="text-5xl font-black text-slate-800">42</span>
-              </div>
-           </div>
-
-           <div className="bg-[#064e3b] p-10 rounded-[3rem] text-white flex flex-col lg:flex-row gap-10 items-center overflow-hidden relative">
-              <div className="flex-1 space-y-6 relative z-10">
-                <h3 className="text-3xl font-black tracking-tight">Regional Soil Heatmap</h3>
-                <p className="text-emerald-100/60 font-medium">Mapping average Nutrient levels across the district. Data aggregated from active IoT nodes.</p>
-                <div className="space-y-4">
-                  {['District A', 'District B', 'District C'].map((d, i) => (
-                    <div key={d} className="space-y-1">
-                      <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-emerald-400">
-                        <span>{d}</span>
-                        <span>{85 - i * 15}% Healthy</span>
-                      </div>
-                      <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
-                        <div className="bg-[#10b981] h-full" style={{ width: `${85 - i * 15}%` }}></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="w-full lg:w-1/2 h-64 bg-white/5 rounded-[2rem] border border-white/10 flex items-center justify-center relative z-10">
-                 <i className="fas fa-map-location-dot text-7xl text-white/20"></i>
-              </div>
-              <i className="fas fa-globe absolute -right-20 -bottom-20 text-[20rem] text-white/5"></i>
-           </div>
-        </div>
-      )}
-
-      {/* Crop Doctor - Vision Feature */}
-      {activeTab === 'doctor' && (
-        <div className="max-w-4xl mx-auto space-y-10 animate-in zoom-in duration-500">
-          <header className="text-center">
-            <h2 className="text-4xl font-black text-slate-800">AI Crop Doctor</h2>
-            <p className="text-slate-400 font-medium text-lg mt-2">Upload a photo of a sick leaf for instant AI diagnosis.</p>
-          </header>
-
-          <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm space-y-8">
-            <div className="flex flex-col items-center justify-center">
-               {diagnosisImage ? (
-                 <div className="relative w-full max-w-sm rounded-[2rem] overflow-hidden group shadow-2xl">
-                    <img src={diagnosisImage} className="w-full h-80 object-cover" />
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                       <button onClick={() => setDiagnosisImage(null)} className="px-6 py-3 bg-white text-rose-600 rounded-xl font-bold">Clear Image</button>
-                    </div>
-                 </div>
-               ) : (
-                 <label className="w-full h-80 border-4 border-dashed border-slate-100 rounded-[2.5rem] flex flex-col items-center justify-center cursor-pointer hover:border-emerald-200 hover:bg-emerald-50 transition-all group">
-                    <div className="w-20 h-20 rounded-full bg-slate-50 text-slate-300 flex items-center justify-center text-3xl mb-4 group-hover:scale-110 group-hover:bg-emerald-100 group-hover:text-emerald-500 transition-all">
-                      <i className="fas fa-cloud-upload-alt"></i>
-                    </div>
-                    <span className="font-black text-slate-400 uppercase tracking-widest text-sm">Drop Leaf Photo Here</span>
-                    <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                 </label>
-               )}
-            </div>
-
-            <button 
-              onClick={handleRunDiagnosis}
-              disabled={!diagnosisImage || isDiagnosing}
-              className="w-full py-5 bg-[#10b981] text-white rounded-2xl font-black shadow-xl shadow-emerald-500/30 hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 transition-all flex items-center justify-center gap-3"
-            >
-              {isDiagnosing ? <i className="fas fa-spinner animate-spin"></i> : <i className="fas fa-microscope"></i>}
-              {isDiagnosing ? 'Analyzing Plant Tissue...' : 'Generate Diagnosis Report'}
-            </button>
-
-            {diagnosisResult && (
-              <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-100 animate-in slide-in-from-top-4">
-                 <h4 className="text-xl font-black text-slate-800 mb-4 flex items-center gap-2">
-                    <i className="fas fa-clipboard-check text-emerald-500"></i> Diagnosis Result
-                 </h4>
-                 <div className="prose prose-slate max-w-none text-slate-600 font-medium whitespace-pre-wrap">
-                   {diagnosisResult}
-                 </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Market - Grounded Search Feature */}
-      {activeTab === 'market' && (
-        <div className="space-y-10 animate-in fade-in duration-500">
-           <header className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-             <div>
-               <h2 className="text-4xl font-black text-slate-800 tracking-tight">Market Intelligence</h2>
-               <p className="text-slate-400 font-medium text-lg">Real-time commodity search powered by Google</p>
-             </div>
-             <div className="flex gap-2">
-               <input 
-                 value={marketSearchQuery}
-                 onChange={(e) => setMarketSearchQuery(e.target.value)}
-                 placeholder="Search Commodity (e.g. Wheat)" 
-                 className="px-6 py-4 bg-white border border-slate-100 rounded-2xl font-bold outline-none focus:ring-4 focus:ring-emerald-100 transition-all"
-               />
-               <button 
-                 onClick={handleMarketSearch}
-                 disabled={isSearchingMarket}
-                 className="w-14 h-14 bg-[#10b981] text-white rounded-2xl flex items-center justify-center hover:shadow-lg transition-all"
-               >
-                 {isSearchingMarket ? <i className="fas fa-spinner animate-spin"></i> : <i className="fas fa-magnifying-glass"></i>}
-               </button>
-             </div>
-           </header>
-
-           {marketTrends && (
-             <div className="grid lg:grid-cols-3 gap-8">
-               <div className="lg:col-span-2 bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm space-y-6">
-                  <h3 className="text-2xl font-black text-slate-800">Intelligence Brief</h3>
-                  <div className="prose prose-emerald whitespace-pre-wrap text-slate-600 font-medium leading-relaxed">
-                    {marketTrends.text}
-                  </div>
-               </div>
-               <div className="bg-slate-900 p-8 rounded-[3rem] text-white shadow-2xl h-fit sticky top-8">
-                  <h4 className="text-xs font-black uppercase tracking-[0.2em] text-emerald-400 mb-6 flex items-center gap-2">
-                    <i className="fas fa-shield-check"></i> Grounded Sources
-                  </h4>
-                  <div className="space-y-4">
-                    {marketTrends.sources.length > 0 ? marketTrends.sources.map((source: any, i: number) => (
-                      <a key={i} href={source.web?.uri} target="_blank" className="block p-4 bg-white/5 border border-white/10 rounded-2xl hover:bg-white/10 transition-all group">
-                         <p className="text-sm font-bold text-white mb-1 line-clamp-1 group-hover:text-emerald-400">{source.web?.title || 'External Report'}</p>
-                         <p className="text-[10px] text-slate-500 font-bold truncate">{source.web?.uri}</p>
-                      </a>
-                    )) : (
-                       <p className="text-slate-500 text-sm italic">General knowledge base used.</p>
-                    )}
-                  </div>
-               </div>
-             </div>
-           )}
-
-           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {[
-                { name: 'Wheat', price: '₹2,450', trend: 'up' },
-                { name: 'Basmati Rice', price: '₹3,800', trend: 'down' },
-                { name: 'Cotton', price: '₹6,120', trend: 'up' },
-                { name: 'Turmeric', price: '₹1,250', trend: 'stable' },
-              ].map((m, i) => (
-                <div key={i} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl transition-all flex flex-col justify-between group">
-                   <div>
-                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg. Rate</span>
-                     <h4 className="font-black text-xl text-slate-800 mb-4">{m.name}</h4>
-                   </div>
-                   <div className="flex items-end justify-between">
-                     <p className="text-2xl font-black text-slate-800">{m.price}</p>
-                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${m.trend === 'up' ? 'bg-emerald-50 text-emerald-600' : m.trend === 'down' ? 'bg-rose-50 text-rose-600' : 'bg-slate-50 text-slate-400'}`}>
-                       <i className={`fas fa-arrow-trend-${m.trend === 'up' ? 'up' : m.trend === 'down' ? 'down' : 'up'}`}></i>
-                     </div>
-                   </div>
-                </div>
-              ))}
-           </div>
-        </div>
-      )}
-
-      {/* Prediction & Advisor - Keeping legacy logic but improving styles */}
-      {activeTab === 'prediction' && (
-         <div className="space-y-10 animate-in slide-in-from-right-10 duration-700">
-            <header className="flex justify-between items-center">
-               <div>
-                 <h2 className="text-4xl font-black text-slate-800">Prediction Engine</h2>
-                 <p className="text-slate-400 font-medium">Analyzing soil chemistry for optimal yield.</p>
-               </div>
-               <button 
-                 onClick={async () => {
-                   setIsLoadingRecs(true);
-                   const res = await getCropRecommendation(sensors);
-                   setRecommendations(res);
-                   setIsLoadingRecs(false);
-                 }}
-                 disabled={isLoadingRecs}
-                 className="px-8 py-4 bg-[#10b981] text-white rounded-2xl font-black shadow-xl shadow-emerald-500/30 flex items-center gap-3"
-               >
-                 {isLoadingRecs ? <i className="fas fa-dna animate-spin"></i> : <i className="fas fa-brain-circuit"></i>}
-                 {isLoadingRecs ? 'Running Genomics...' : 'Run Simulation'}
-               </button>
-            </header>
-            
-            <div className="grid md:grid-cols-3 gap-8">
-              {recommendations.length > 0 ? recommendations.map((r, i) => (
-                <div key={i} className="bg-white p-8 rounded-[3rem] shadow-sm border-t-8 border-[#10b981] hover:shadow-2xl transition-all duration-500">
-                   <div className="flex justify-between mb-4">
-                     <h4 className="text-2xl font-black text-slate-800">{r.crop}</h4>
-                     <span className="text-emerald-600 font-black">{Math.round(r.confidence * 100)}%</span>
-                   </div>
-                   <p className="text-slate-600 font-medium text-sm leading-relaxed mb-6">{r.suitabilityReason}</p>
-                   <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                      <p className="text-[10px] font-black uppercase text-emerald-600 tracking-widest mb-1">Outlook</p>
-                      <p className="text-xs font-bold text-emerald-800 italic">"{r.seasonalOutlook}"</p>
-                   </div>
-                </div>
-              )) : (
-                <div className="md:col-span-3 py-32 text-center bg-white rounded-[3rem] border-4 border-dashed border-slate-100">
-                   <i className="fas fa-wand-magic-sparkles text-6xl text-slate-100 mb-6"></i>
-                   <h3 className="text-xl font-black text-slate-300">Ready to simulate</h3>
-                </div>
-              )}
-            </div>
-         </div>
-      )}
-
-      {/* Chat Tab - Agronomist Advisor */}
-      {activeTab === 'chat' && (
-        <div className="h-[calc(100vh-200px)] flex flex-col animate-in slide-in-from-right-10 duration-700">
-          <header className="mb-8 flex items-center gap-5">
-            <div className="w-16 h-16 bg-[#10b981] text-white rounded-3xl flex items-center justify-center text-3xl shadow-lg">
-              <i className="fas fa-user-doctor"></i>
-            </div>
-            <div>
-              <h2 className="text-3xl font-black text-slate-800">AI Agronomist</h2>
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></div>
-                <span className="text-sm font-bold text-emerald-600 uppercase tracking-widest">Active Consultant</span>
-              </div>
-            </div>
-          </header>
-
-          <div className="flex-1 bg-white rounded-[3rem] shadow-2xl border border-slate-100 flex flex-col overflow-hidden">
-             <div className="flex-1 overflow-y-auto p-10 space-y-6">
-                {chatHistory.length === 0 && (
-                  <div className="h-full flex flex-col items-center justify-center text-center opacity-20 grayscale">
-                    <i className="fas fa-comment-medical text-9xl mb-6"></i>
-                    <p className="text-xl font-black">Waiting for your question...</p>
-                  </div>
-                )}
-                {chatHistory.map((msg, i) => (
-                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} items-end gap-3`}>
-                    {msg.role === 'bot' && <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-[10px] text-emerald-600 font-black">AI</div>}
-                    <div className={`max-w-[75%] p-6 rounded-[2rem] text-sm font-bold leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-[#064e3b] text-white rounded-br-none' : 'bg-slate-50 text-slate-800 rounded-bl-none'}`}>
-                      {msg.text}
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatEndRef}></div>
-             </div>
-
-             <div className="p-6 border-t border-slate-50 bg-slate-50/50">
-               <div className="flex gap-4">
-                 <input 
-                   value={chatInput}
-                   onChange={(e) => setChatInput(e.target.value)}
-                   onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
-                   placeholder="Ask about fertilizer mix, pest signs, or irrigation..." 
-                   className="flex-1 px-8 py-5 rounded-[2rem] border-2 border-slate-100 outline-none focus:ring-4 focus:ring-emerald-100 transition-all font-bold shadow-inner bg-white" 
-                 />
-                 <button 
-                   onClick={handleSendChat}
-                   className="w-16 h-16 bg-[#10b981] text-white rounded-[2rem] flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-xl shadow-emerald-500/30"
-                 >
-                   <i className="fas fa-paper-plane"></i>
-                 </button>
-               </div>
-             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Admin CRM Tabs */}
-      {activeTab === 'farmers' && currentUser.role === UserRole.ADMIN && (
-        <div className="space-y-8 animate-in slide-in-from-left-10 duration-700">
-           <header className="flex justify-between items-center">
-             <h2 className="text-4xl font-black text-slate-800 tracking-tight">Farmer Database</h2>
-             <button className="px-8 py-4 bg-[#10b981] text-white rounded-2xl font-black shadow-lg">Export CSV</button>
-           </header>
-           
-           <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 border-b border-slate-100 font-black text-[10px] uppercase tracking-[0.2em] text-slate-400">
-                  <tr>
-                    <th className="px-8 py-6">ID</th>
-                    <th className="px-8 py-6">Name</th>
-                    <th className="px-8 py-6">Phone</th>
-                    <th className="px-8 py-6">Status</th>
-                    <th className="px-8 py-6 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {farmers.map(f => (
-                    <tr key={f.id} className="hover:bg-slate-50/50 transition-colors group">
-                      <td className="px-8 py-6 text-xs font-black text-slate-300">#{f.id}</td>
-                      <td className="px-8 py-6 font-black text-slate-800">{f.name}</td>
-                      <td className="px-8 py-6 font-bold text-slate-500">{f.phone}</td>
-                      <td className="px-8 py-6">
-                         <span className={`px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest ${
-                           f.status === UserStatus.APPROVED ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600'
-                         }`}>
-                           {f.status}
-                         </span>
-                      </td>
-                      <td className="px-8 py-6 text-right space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <button className="p-3 bg-slate-100 rounded-xl text-slate-600 hover:bg-blue-100 hover:text-blue-600 transition-all"><i className="fas fa-pencil"></i></button>
-                         <button className="p-3 bg-slate-100 rounded-xl text-slate-600 hover:bg-rose-100 hover:text-rose-600 transition-all"><i className="fas fa-trash"></i></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-           </div>
-        </div>
-      )}
-
+    <Layout userRole={currentUser.role} onLogout={() => { stopVoice(); setCurrentUser(null); setAuthState('login'); }} activeTab={activeTab} setActiveTab={setActiveTab} language={language} setLanguage={setLanguage}>
+      {currentUser.role === UserRole.ADMIN ? renderAdminContent() : renderFarmerContent()}
     </Layout>
   );
 };
